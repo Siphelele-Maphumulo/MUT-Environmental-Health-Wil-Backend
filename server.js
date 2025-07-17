@@ -41,32 +41,16 @@ app.use(
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
 // ======= Security Headers ======= //
-// app.use((req, res, next) => {
-//   console.log("Body:", req.body);
-//   console.log("Files:", req.files);
-//   res.setHeader(
-//     "Content-Security-Policy",
-//     "default-src 'self'; img-src 'self' data: http://localhost:8080"
-//   );
-//   res.setHeader("X-Content-Type-Options", "nosniff");
-//   next();
-// });
-
-const helmet = require("helmet");
-
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        styleSrc: ["'self'", "https://fonts.googleapis.com"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
-        imgSrc: ["'self'", "data:", "http://localhost:8080"],
-        scriptSrc: ["'self'"],
-      },
-    },
-  })
-);
+app.use((req, res, next) => {
+  console.log("Body:", req.body);
+  console.log("Files:", req.files);
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data: http://localhost:8080"
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
 
 // ======= Session Middleware ======= //
 app.use(

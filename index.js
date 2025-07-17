@@ -7,10 +7,611 @@
 //   const title = document.querySelector("#title").value;
 //   const password = document.querySelector("#password").value;
 
-  const userData = {
-    email: email,
-    title: title,
-    password: password,
+//   const userData = {
+//     email: email,
+//     title: title,
+//     password: password,
+//   };
+
+//   try {
+//     const response = await fetch("http://localhost:3000/signup", {
+//       method: "POST",
+//       headers: {
+//         "Content-Type": "application/json",
+//       },
+//       body: JSON.stringify(userData),
+//     });
+
+//     const result = await response.json();
+
+//     if (response.ok) {
+//       alert(result.message);
+//     } else {
+//       alert(result.message);
+//     }
+//   } catch (error) {
+//     console.error("Error during the request:", error);
+//     alert("Something went wrong. Please try again.");
+//   }
+// });
+
+require("dotenv").config();
+const express = require("express");
+const mysql = require("mysql2/promise");
+const bcrypt = require('bcryptjs');
+const jwt = require("jsonwebtoken");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const path = require("path");
+const multer = require("multer");
+const fs = require("fs");
+const session = require("express-session");
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
+const moment = require('moment');
+
+const app = express();
+const port = process.env.PORT || 8080;
+
+// ======= MySQL Connection Pool ======= //
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
+
+// ======= Middleware ======= //
+app.use(express.json());
+app.use(bodyParser.json());
+app.use(
+  cors({
+    origin: "http://localhost:4200", // Allow requests from Angular frontend
+    credentials: true,
+  })
+);
+
+// Secret key for signing JWT (store this securely, e.g., in an environment variable)
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
+
+// ======= Security Headers ======= //
+app.use((req, res, next) => {
+  console.log("Body:", req.body);
+  console.log("Files:", req.files);
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data: http://localhost:8080"
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+
+// ======= Session Middleware ======= //
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "your-secret-key", // Use a secure secret key
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+      httpOnly: true,
+      secure: false, // Set to true if using HTTPS
+      maxAge: 1000 * 60 * 60, // Session expires in 1 hour
+    },
+  })
+);
+
+const saltRounds = 10;
+
+// Add this RIGHT AFTER your session middleware but BEFORE your routes
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// ======= Multer Configuration for File Uploads ======= //
+const UPLOADS_PATH = path.join(__dirname, "uploads");
+
+if (!fs.existsSync(UPLOADS_PATH)) {
+  fs.mkdirSync(UPLOADS_PATH, { recursive: true });
+}
+
+// Configure multer storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, path.join(__dirname, "uploads"));
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  },
+});
+
+const upload = multer({ storage });
+
+// ======= Serve Uploaded Files ======= //
+app.use("/uploads", express.static(UPLOADS_PATH));
+
+// ======= Generate JWT Token ======= //
+function generateToken(user) {
+  return jwt.sign(
+    { userId: user.id, email: user.email },
+    JWT_SECRET,
+    { expiresIn: "1h" } // Token expires in 1 hour
+  );
+}
+
+// ======= Verify JWT Token Middleware ======= //
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    return res
+      .status(401)
+      .json({ message: "Access denied. No token provided." });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: "Invalid or expired token." });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// isAuthenticated Middleware
+function isAuthenticated(req, res, next) {
+  // Extract the token from the Authorization header
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ message: "Unauthorized: Missing token" });
+  }
+
+  const token = authHeader.split(" ")[1]; // Extract the token after "Bearer"
+
+  try {
+    // Verify the token
+    const decoded = jwt.verify(token, SECRET_KEY);
+
+    // Attach the user information to the request object
+    req.user = decoded;
+
+    // Proceed to the next middleware/route handler
+    next();
+  } catch (error) {
+    // Handle invalid or expired tokens
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+}
+
+// ========= Email transporter setup ==============//
+const transporter = nodemailer.createTransport({
+  service: "gmail", // or your email provider
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
+// Generate random 8-character code
+function generateCode() {
+  return crypto.randomBytes(4).toString("hex").toUpperCase();
+}
+
+// Protected Route Example
+app.get("/api/protected", isAuthenticated, (req, res) => {
+  // Access the authenticated user's information from req.user
+  res.json({ message: "You are authorized!", user: req.user });
+});
+
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++//
+app.get("/api/hospitals", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      "SELECT name FROM hospitals ORDER BY name"
+    );
+    res.status(200).json(rows.map((row) => row.name));
+  } catch (err) {
+    console.error("Error fetching hospitals:", err);
+    res.status(500).json({ message: "Failed to fetch hospitals" });
+  }
+});
+
+app.get("/api/municipalities", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      "SELECT name FROM municipalities ORDER BY name"
+    );
+    res.status(200).json(rows.map((row) => row.name));
+  } catch (err) {
+    console.error("Error fetching municipalities:", err);
+    res.status(500).json({ message: "Failed to fetch municipalities" });
+  }
+});
+
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++//
+
+// ======= Students Signup Route ======= //
+app.post("/api/student_signup", async (req, res) => {
+  const { email, title, password, code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ message: "Signup code is required" });
+  }
+
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // Validate the signup code
+    const [codeRows] = await connection.execute(
+      `SELECT * FROM signup_codes WHERE code = ?`,
+      [code]
+    );
+
+    if (codeRows.length === 0) {
+      await connection.rollback();
+      return res
+        .status(400)
+        .json({ message: "Invalid or expired signup code" });
+    }
+
+    // Hash the password once for both inserts
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insert into student_users table
+    await connection.execute(
+      "INSERT INTO student_users (email, title, password) VALUES (?, ?, ?)",
+      [email, title, hashedPassword]
+    );
+
+    // Insert into users table
+    await connection.execute(
+      "INSERT INTO users (email, title, password) VALUES (?, ?, ?)",
+      [email, title, hashedPassword]
+    );
+
+    // Remove the used signup code
+    await connection.execute("DELETE FROM signup_codes WHERE code = ?", [code]);
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: "User registered successfully in both systems",
+      data: { email, title },
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Error during signup:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({
+        message: "Email already exists in one or both systems",
+        details: error.message,
+      });
+    }
+
+    res.status(500).json({
+      message: "Signup failed",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// ======= Staff Signup Route ======= //
+app.post("/api/staff_Signup", async (req, res) => {
+  const { email, title, password, code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ message: "Signup code is required" });
+  }
+
+  const connection = await pool.getConnection(); // <-- add this line
+
+  try {
+    await connection.beginTransaction(); // <-- start transaction
+
+    // First, validate if the code still exists
+    const [rows] = await connection.execute(
+      `SELECT * FROM staff_codes WHERE code = ?`,
+      [code]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback(); // <-- rollback if no code
+      return res
+        .status(400)
+        .json({ message: "Invalid or expired signup code" });
+    }
+
+    // Proceed with user creation
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const query =
+      "INSERT INTO staff_users (email, title, password) VALUES (?, ?, ?)";
+    await connection.execute(query, [email, title, hashedPassword]);
+
+    // After successful signup, delete the code
+    await connection.execute(`DELETE FROM staff_codes WHERE code = ?`, [code]);
+
+    await connection.commit(); // <-- commit transaction
+
+    res
+      .status(201)
+      .json({ message: "User registered successfully and code deleted" });
+  } catch (error) {
+    await connection.rollback(); // <-- rollback on error
+    console.error("Error during signup:", error);
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+    res.status(500).json({ message: "Signup failed" });
+  } finally {
+    connection.release(); // <-- important to release connection
+  }
+});
+
+
+// ======= Mentor Signup Route ======= //
+app.post("/api/mentor_signup", async (req, res) => {
+  const { email, title, password, code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ message: "Signup code is required" });
+  }
+
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // Check code validity
+    const [rows] = await connection.execute(
+      `SELECT * FROM staff_codes WHERE code = ?`,
+      [code]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({ message: "Invalid or expired signup code" });
+    }
+
+    // Hash password and insert mentor
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const insertQuery =
+      "INSERT INTO mentor_users (email, title, password) VALUES (?, ?, ?)";
+    await connection.execute(insertQuery, [email, title, hashedPassword]);
+
+    // Delete used code
+    await connection.execute(`DELETE FROM staff_codes WHERE code = ?`, [code]);
+
+    await connection.commit();
+    res.status(201).json({
+      message: "Mentor registered successfully and code deleted",
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Error during mentor signup:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+
+    res.status(500).json({ message: "Signup failed" });
+  } finally {
+    connection.release();
+  }
+});
+
+
+// ======= Hpcsa Signup Route ======= //
+app.post('/api/hpcsa/signup', upload.single('hpcsa_signature'), async (req, res) => {
+  const { hi_number, name, surname, email, password, contact } = req.body;
+  const hpcsa_signature = req.file ? req.file.path : null;
+
+  try {
+    if (!hi_number || !name || !surname || !email || !password) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Missing required fields' });
+    }
+
+    const [existing] = await pool.execute(
+      'SELECT id FROM hpcsa_auditor WHERE email = ? OR hi_number = ?',
+      [email, hi_number]
+    );
+
+    if (existing.length > 0) {
+      return res
+        .status(409)
+        .json({ success: false, message: 'Email or HPCSA number already registered' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    const [result] = await pool.execute(
+      `INSERT INTO hpcsa_auditor
+         (hi_number, name, surname, email, password, contact, hpcsa_signature, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [hi_number, name, surname, email, hashedPassword, contact || null, hpcsa_signature]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'HPCSA auditor registered successfully',
+      auditorId: result.insertId
+    });
+  } catch (error) {
+    console.error('Error in HPCSA signup:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+
+app.post("/api/signup", async (req, res) => {
+  const { email, title, password, code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ message: "Signup code is required" });
+  }
+
+  const connection = await pool.getConnection(); // <-- add this line
+
+  try {
+    await connection.beginTransaction(); // <-- start transaction
+
+    // First, validate if the code still exists
+    const [rows] = await connection.execute(
+      `SELECT * FROM signup_codes WHERE code = ?`,
+      [code]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback(); // <-- rollback if no code
+      return res
+        .status(400)
+        .json({ message: "Invalid or expired signup code" });
+    }
+
+    // Proceed with user creation
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const query = "INSERT INTO users (email, title, password) VALUES (?, ?, ?)";
+    await connection.execute(query, [email, title, hashedPassword]);
+
+    // After successful signup, delete the code
+    await connection.execute(`DELETE FROM signup_codes WHERE code = ?`, [code]);
+
+    await connection.commit(); // <-- commit transaction
+
+    res
+      .status(201)
+      .json({ message: "User registered successfully and code deleted" });
+  } catch (error) {
+    await connection.rollback(); // <-- rollback on error
+    console.error("Error during signup:", error);
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+    res.status(500).json({ message: "Signup failed" });
+  } finally {
+    connection.release(); // <-- important to release connection
+  }
+});
+
+// ======= Generate staff code ======= //
+function generateStaffCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+// ======= Generate mentor code ======= //
+function generateMentorCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+
+// ======= Create staff code endpoint ======= //
+app.post("/api/staff_codes", async (req, res) => {
+  try {
+    const { staff_name, staff_email } = req.body;
+
+    // Validate input
+    if (!staff_name || !staff_email) {
+      return res.status(400).json({
+        success: false,
+        message: "Staff name and email are required",
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(staff_email)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format",
+      });
+    }
+
+    // Generate unique staff code
+    let code;
+    let isUnique = false;
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    while (!isUnique && attempts < maxAttempts) {
+      code = generateStaffCode();
+      const [existing] = await pool.query(
+        "SELECT * FROM staff_codes WHERE code = ?",
+        [code]
+      );
+      isUnique = existing.length === 0;
+      attempts++;
+    }
+
+    if (!isUnique) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate unique staff code",
+      });
+    }
+
+    // Insert into database
+    const [result] = await pool.query(
+      "INSERT INTO staff_codes (code, staff_name, staff_email) VALUES (?, ?, ?)",
+      [code, staff_name, staff_email]
+    );
+
+    // Send email with the staff code
+    await sendStaffCodeEmail(staff_email, staff_name, code);
+
+    res.status(201).json({
+      success: true,
+      message: "Staff code created and sent via email",
+      data: {
+        code,
+      },
+    });
+  } catch (error) {
+    console.error("Error creating staff code:", error);
+
+    // Check if the error is from email sending
+    if (error.message === "Status updated but failed to send email") {
+      res.status(201).json({
+        success: true,
+        message: "Staff code created but email failed to send",
+        data: {
+          code,
+        },
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+});
+
+
+// =======++   Email sending function for staff codes ======= //
+async function sendStaffCodeEmail(to, staffName, code) {
+  const mailOptions = {
+    from: process.env.EMAIL_FROM,
+    to: to,
+    subject: "Your Staff Registration Code",
+    text:
+      `Dear ${staffName},\n\n` +
+      `Your staff registration code has been successfully generated.\n\n` +
+      `Your staff code is: ${code}\n\n` +
+      `Please use this code to complete your registration on our system.\n\n` +
+      `Best regards,\n` +
+      `MUT FACULTY OF NATURAL SCIENCES: DEPARTMENT OF ENVIRONMENTAL HEALTH`,
   };
 
   try {
