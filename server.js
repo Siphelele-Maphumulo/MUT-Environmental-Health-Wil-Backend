@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const mysql = require("mysql2/promise");
-const bcrypt = require("bcrypt");
+const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
 const bodyParser = require("body-parser");
 const cors = require("cors");
@@ -18,16 +18,14 @@ const port = process.env.PORT || 8080;
 
 // ======= MySQL Connection Pool ======= //
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || process.env.MYSQL_ADDON_HOST,
-  user: process.env.DB_USER || process.env.MYSQL_ADDON_USER,
-  password: process.env.DB_PASSWORD || process.env.MYSQL_ADDON_PASSWORD,
-  database: process.env.DB_NAME || process.env.MYSQL_ADDON_DB,
-  port: process.env.DB_PORT || process.env.MYSQL_ADDON_PORT || 3306,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
 });
-
 
 // ======= Middleware ======= //
 app.use(express.json());
