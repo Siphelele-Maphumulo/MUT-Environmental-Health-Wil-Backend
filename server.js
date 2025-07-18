@@ -44,9 +44,11 @@ const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 app.use((req, res, next) => {
   console.log("Body:", req.body);
   console.log("Files:", req.files);
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' data: http://localhost:8080"
+  res.setHeader("Content-Security-Policy", 
+    "default-src 'self'; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com; " +
+    "img-src 'self' data: http://localhost:8080"
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   next();
