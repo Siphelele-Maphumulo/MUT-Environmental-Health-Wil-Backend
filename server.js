@@ -9,11 +9,10 @@ const path = require("path");
 const multer = require("multer");
 const fs = require("fs");
 const session = require("express-session");
-const RedisStore = require("connect-redis")(session);
-const redis = require("redis");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const moment = require('moment');
+const helmet = require("helmet");
 
 const app = express();
 
@@ -30,6 +29,31 @@ const backendUrl = isProduction
   ? "https://mut-environmental-health-wil-backend.onrender.com" 
   : `http://localhost:${PORT}`;
 
+// ======= Session Store Configuration ======= //
+let sessionStore;
+
+if (isProduction && process.env.REDIS_URL) {
+  try {
+    const RedisStore = require("connect-redis").default;
+    const redis = require("redis");
+    const redisClient = redis.createClient({
+      url: process.env.REDIS_URL
+    });
+    redisClient.connect().catch(console.error);
+    sessionStore = new RedisStore({ client: redisClient });
+    console.log("Redis store initialized successfully");
+  } catch (err) {
+    console.error("Redis initialization failed:", err);
+    sessionStore = new session.MemoryStore();
+    console.warn("Falling back to MemoryStore - not recommended for production");
+  }
+} else {
+  sessionStore = new session.MemoryStore();
+  if (isProduction) {
+    console.warn("Using MemoryStore in production - not recommended");
+  }
+}
+
 // ======= MySQL Connection Pool ======= //
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -41,30 +65,16 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-// ======= Redis Client Setup ======= //
-let redisClient;
-let sessionStore;
-
-if (isProduction) {
-  redisClient = redis.createClient({
-    url: process.env.REDIS_URL,
-    legacyMode: true
-  });
-  redisClient.connect().catch(console.error);
-  sessionStore = new RedisStore({ client: redisClient });
-} else {
-  sessionStore = new session.MemoryStore();
-}
-
 // ======= Middleware ======= //
 app.use(express.json());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(helmet());
 
 // Enhanced CORS configuration
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin || frontendUrls.includes(origin)) {
+    if (!origin || frontendUrls.some(url => origin.startsWith(url))) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -88,16 +98,9 @@ app.use((req, res, next) => {
     `frame-src 'none'; ` +
     `object-src 'none'`
   );
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
-  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   
   // Logging
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  console.log("Body:", req.body);
-  console.log("Files:", req.files);
-  
   next();
 });
 
@@ -111,8 +114,7 @@ const sessionConfig = {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? "none" : "lax",
-    maxAge: 1000 * 60 * 60, // 1 hour
-    domain: isProduction ? ".onrender.com" : undefined
+    maxAge: 1000 * 60 * 60 // 1 hour
   }
 };
 
