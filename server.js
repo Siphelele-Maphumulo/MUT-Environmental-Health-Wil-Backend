@@ -33,7 +33,7 @@ app.use(bodyParser.json());
 app.use(
   cors({
     //origin: "http://localhost:4200", // Allow requests from Angular frontend
-    origin: "https://mut-environmental-health-wil-backend.onrender.com", // Allow requests from Angular frontend
+    origin: "https://mut-environmental-health-wil-backend.onrender.com/", // Allow requests from Angular frontend
     credentials: true,
   })
 );
@@ -43,20 +43,24 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get('/', (req, res) => {
+  res.status(200).json({ message: 'Welcome to the MUT Environmental Health WIL Backend API' });
+});
+
 // Secret key for signing JWT (store this securely, e.g., in an environment variable)
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
 // ======= Security Headers ======= //
-app.use((req, res, next) => {
-  console.log("Body:", req.body);
-  console.log("Files:", req.files);
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' data: http://localhost:8080"
-  );
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  next();
-});
+// app.use((req, res, next) => {
+//   console.log("Body:", req.body);
+//   console.log("Files:", req.files);
+//   res.setHeader(
+//     "Content-Security-Policy",
+//     "default-src 'self'; img-src 'self' data: http://localhost:8080"
+//   );
+//   res.setHeader("X-Content-Type-Options", "nosniff");
+//   next();
+// });
 
 // ======= Session Middleware ======= //
 app.use(
