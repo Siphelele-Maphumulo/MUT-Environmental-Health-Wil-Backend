@@ -46,6 +46,11 @@ app.use((req, res, next) => {
   console.log("Files:", req.files);
   res.setHeader("Content-Security-Policy", 
     "default-src 'self'; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com; " +
+    "img-src 'self' data: http://localhost:8080"
+  res.setHeader("Content-Security-Policy", 
+    "default-src 'self'; " +
     "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " + // Allow inline scripts
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     "font-src 'self' https://fonts.gstatic.com data:; " + // Added data: for font loading
