@@ -44,14 +44,21 @@ const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 app.use((req, res, next) => {
   console.log("Body:", req.body);
   console.log("Files:", req.files);
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' data: http://localhost:8080"
+  res.setHeader("Content-Security-Policy", 
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " + // Allow inline scripts
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com data:; " + // Added data: for font loading
+    "img-src 'self' data: http://localhost:8080; " +
+    "connect-src 'self'; " +
+    "frame-src 'none'; " +
+    "object-src 'none'"
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
   next();
 });
-
 // ======= Session Middleware ======= //
 app.use(
   session({
