@@ -12,149 +12,176 @@ const session = require("express-session");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const moment = require('moment');
-const helmet = require("helmet");
 
 const app = express();
+const port = process.env.PORT || 8080;
 
-// ======= Environment Configuration ======= //
-const PORT = process.env.PORT || 10000;
-const isProduction = process.env.NODE_ENV === "production";
-
-// URLs configuration
-const frontendUrls = [
-  "http://localhost:4200",
-  "https://environmental-health-wil-frontend.netlify.app"
-];
-const backendUrl = isProduction 
-  ? "https://mut-environmental-health-wil-backend.onrender.com" 
-  : `http://localhost:${PORT}`;
-
-// ======= Session Store Configuration ======= //
-let sessionStore = new session.MemoryStore();
-if (isProduction) {
-  console.warn("Using MemoryStore in production - not recommended");
-  console.warn("For production, please configure Redis with REDIS_URL");
-}
+// ======= MySQL Connection Pool ======= //
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
 
 // ======= Middleware ======= //
 app.use(express.json());
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(
+  cors({
+    //origin: "http://localhost:4200", // Allow requests from Angular frontend
+    origin: "https://mut-environmental-health-wil-backend.onrender.com", // Allow requests from Angular frontend
+    credentials: true,
+  })
+);
 
-// Security middleware
-app.use(helmet());
-
-// Configure Content Security Policy
 app.use((req, res, next) => {
-  res.setHeader("Content-Security-Policy", 
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src 'self' https://fonts.gstatic.com data:; " +
-    "img-src 'self' data: blob:; " +
-    "connect-src 'self' " + backendUrl + " " + frontendUrls.join(" ") + "; " +
-    "frame-src 'none'; " +
-    "object-src 'none'"
-  );
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
-  
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// CORS configuration
-app.use(cors({
-  origin: frontendUrls,
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+// Secret key for signing JWT (store this securely, e.g., in an environment variable)
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
-// Session configuration
-app.use(session({
-  store: sessionStore,
-  secret: process.env.SESSION_SECRET || "your-secret-key",
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    maxAge: 1000 * 60 * 60 // 1 hour
-  }
-}));
+// ======= Security Headers ======= //
+app.use((req, res, next) => {
+  console.log("Body:", req.body);
+  console.log("Files:", req.files);
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data: http://localhost:8080"
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
 
-if (isProduction) {
-  app.set('trust proxy', 1);
-}
+// ======= Session Middleware ======= //
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "your-secret-key", // Use a secure secret key
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+      httpOnly: true,
+      secure: false, // Set to true if using HTTPS
+      maxAge: 1000 * 60 * 60, // Session expires in 1 hour
+    },
+  })
+);
 
-// ======= File Upload Configuration ======= //
+const saltRounds = 10;
+
+// Add this RIGHT AFTER your session middleware but BEFORE your routes
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+
+// ======= Multer Configuration for File Uploads ======= //
 const UPLOADS_PATH = path.join(__dirname, "uploads");
+
 if (!fs.existsSync(UPLOADS_PATH)) {
   fs.mkdirSync(UPLOADS_PATH, { recursive: true });
 }
 
-const upload = multer({ 
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_PATH),
-    filename: (req, file, cb) => {
-      const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-      cb(null, `${uniqueSuffix}-${file.originalname}`);
-    }
-  }),
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+// Configure multer storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, path.join(__dirname, "uploads"));
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  },
 });
 
+const upload = multer({ storage });
+
+// ======= Serve Uploaded Files ======= //
 app.use("/uploads", express.static(UPLOADS_PATH));
 
-// ======= Routes ======= //
-// Add your routes here...
+// ======= Generate JWT Token ======= //
+function generateToken(user) {
+  return jwt.sign(
+    { userId: user.id, email: user.email },
+    JWT_SECRET,
+    { expiresIn: "1h" } // Token expires in 1 hour
+  );
+}
 
-// Health check endpoint
-app.get("/", (req, res) => {
-  res.status(200).json({ 
-    status: "Server is running",
-    environment: isProduction ? "production" : "development"
+// ======= Verify JWT Token Middleware ======= //
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    return res
+      .status(401)
+      .json({ message: "Access denied. No token provided." });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: "Invalid or expired token." });
+    }
+    req.user = user;
+    next();
   });
-});
+}
 
-// ======= Email Configuration ======= //
+// isAuthenticated Middleware
+function isAuthenticated(req, res, next) {
+  // Extract the token from the Authorization header
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ message: "Unauthorized: Missing token" });
+  }
+
+  const token = authHeader.split(" ")[1]; // Extract the token after "Bearer"
+
+  try {
+    // Verify the token
+    const decoded = jwt.verify(token, SECRET_KEY);
+
+    // Attach the user information to the request object
+    req.user = decoded;
+
+    // Proceed to the next middleware/route handler
+    next();
+  } catch (error) {
+    // Handle invalid or expired tokens
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+}
+
+// ========= Email transporter setup ==============//
 const transporter = nodemailer.createTransport({
-  service: process.env.EMAIL_SERVICE || "gmail",
+  service: "gmail", // or your email provider
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  tls: {
-    rejectUnauthorized: isProduction
-  }
 });
 
+// Generate random 8-character code
 function generateCode() {
   return crypto.randomBytes(4).toString("hex").toUpperCase();
 }
 
-// ======= Routes ======= //
+// Protected Route Example
 app.get("/api/protected", isAuthenticated, (req, res) => {
-  res.json({ 
-    message: "You are authorized!", 
-    user: {
-      id: req.user.userId,
-      email: req.user.email,
-      role: req.user.role
-    }
-  });
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'healthy',
-    environment: process.env.NODE_ENV || 'development',
-    timestamp: new Date().toISOString()
-  });
+  // Access the authenticated user's information from req.user
+  res.json({ message: "You are authorized!", user: req.user });
 });
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++//
@@ -4744,12 +4771,7 @@ Nombeko Training Consultants & CodeSA Institute (PTY) LTD
 });
 
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`Environment: ${isProduction ? 'Production' : 'Development'}`);
-  console.log(`Allowed origins: ${frontendUrls.join(', ')}`);
-  if (isProduction && !process.env.REDIS_URL) {
-    console.warn('WARNING: Running in production without Redis');
-  }
+// ======= Start the Server ======= //
+app.listen(port, () => {
+  console.log(`🚀 Server running at: http://localhost:${port}`);
 });
