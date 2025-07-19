@@ -30,71 +30,50 @@ const backendUrl = isProduction
   : `http://localhost:${PORT}`;
 
 // ======= Session Store Configuration ======= //
-let sessionStore;
-
-// MemoryStore fallback
-sessionStore = new session.MemoryStore();
+let sessionStore = new session.MemoryStore();
 if (isProduction) {
   console.warn("Using MemoryStore in production - not recommended");
   console.warn("For production, please configure Redis with REDIS_URL");
 }
 
-// ======= MySQL Connection Pool ======= //
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
-
 // ======= Middleware ======= //
 app.use(express.json());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// Security middleware
 app.use(helmet());
 
-// Enhanced CORS configuration
-app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin || frontendUrls.some(url => origin.startsWith(url))) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
-}));
-
-// Security headers middleware
+// Configure Content Security Policy
 app.use((req, res, next) => {
-  // Security Headers
   res.setHeader("Content-Security-Policy", 
-    `default-src 'self'; ` +
-    `script-src 'self' 'unsafe-inline' 'unsafe-eval'; ` +
-    `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; ` +
-    `font-src 'self' https://fonts.gstatic.com data:; ` +
-    `img-src 'self' data: ${backendUrl}; ` +
-    `connect-src 'self' ${backendUrl} ${frontendUrls.join(" ")}; ` +
-    `frame-src 'none'; ` +
-    `object-src 'none'`
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com data:; " +
+    "img-src 'self' data: blob:; " +
+    "connect-src 'self' " + backendUrl + " " + frontendUrls.join(" ") + "; " +
+    "frame-src 'none'; " +
+    "object-src 'none'"
   );
-  
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-XSS-Protection", "1; mode=block");
   
-  // Logging
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
+// CORS configuration
+app.use(cors({
+  origin: frontendUrls,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
 // Session configuration
-const sessionConfig = {
+app.use(session({
   store: sessionStore,
   secret: process.env.SESSION_SECRET || "your-secret-key",
   resave: false,
@@ -105,16 +84,11 @@ const sessionConfig = {
     sameSite: isProduction ? "none" : "lax",
     maxAge: 1000 * 60 * 60 // 1 hour
   }
-};
+}));
 
 if (isProduction) {
-  app.set('trust proxy', 1); // Trust first proxy
+  app.set('trust proxy', 1);
 }
-app.use(session(sessionConfig));
-
-// JWT Configuration
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
-const saltRounds = 10;
 
 // ======= File Upload Configuration ======= //
 const UPLOADS_PATH = path.join(__dirname, "uploads");
@@ -122,79 +96,27 @@ if (!fs.existsSync(UPLOADS_PATH)) {
   fs.mkdirSync(UPLOADS_PATH, { recursive: true });
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOADS_PATH);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  }
-});
-
 const upload = multer({ 
-  storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB
-  }
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOADS_PATH),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      cb(null, `${uniqueSuffix}-${file.originalname}`);
+    }
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
 });
 
 app.use("/uploads", express.static(UPLOADS_PATH));
-
-// ======= Token Functions ======= //
-function generateToken(user) {
-  return jwt.sign(
-    { 
-      userId: user.id, 
-      email: user.email,
-      role: user.role || 'user'
-    },
-    JWT_SECRET,
-    { expiresIn: "1h" }
-  );
-}
-
-function authenticateToken(req, res, next) {
-  const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ message: "Access denied. No token provided." });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ message: "Invalid or expired token." });
-    }
-    req.user = user;
-    next();
-  });
-}
-
-function isAuthenticated(req, res, next) {
-  const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ message: "Unauthorized: Missing token" });
-  }
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    return res.status(401).json({ message: "Unauthorized: Invalid token" });
-  }
-}
 
 // ======= Routes ======= //
 // Add your routes here...
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get("/", (req, res) => {
   res.status(200).json({ 
-    status: 'ok',
-    environment: process.env.NODE_ENV || 'development',
-    timestamp: new Date().toISOString()
+    status: "Server is running",
+    environment: isProduction ? "production" : "development"
   });
 });
 
@@ -4822,7 +4744,7 @@ Nombeko Training Consultants & CodeSA Institute (PTY) LTD
 });
 
 
-// ======= Start the Server ======= //
+// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`Environment: ${isProduction ? 'Production' : 'Development'}`);
