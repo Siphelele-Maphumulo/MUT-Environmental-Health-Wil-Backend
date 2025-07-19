@@ -32,26 +32,11 @@ const backendUrl = isProduction
 // ======= Session Store Configuration ======= //
 let sessionStore;
 
-if (isProduction && process.env.REDIS_URL) {
-  try {
-    const RedisStore = require("connect-redis").default;
-    const redis = require("redis");
-    const redisClient = redis.createClient({
-      url: process.env.REDIS_URL
-    });
-    redisClient.connect().catch(console.error);
-    sessionStore = new RedisStore({ client: redisClient });
-    console.log("Redis store initialized successfully");
-  } catch (err) {
-    console.error("Redis initialization failed:", err);
-    sessionStore = new session.MemoryStore();
-    console.warn("Falling back to MemoryStore - not recommended for production");
-  }
-} else {
-  sessionStore = new session.MemoryStore();
-  if (isProduction) {
-    console.warn("Using MemoryStore in production - not recommended");
-  }
+// MemoryStore fallback
+sessionStore = new session.MemoryStore();
+if (isProduction) {
+  console.warn("Using MemoryStore in production - not recommended");
+  console.warn("For production, please configure Redis with REDIS_URL");
 }
 
 // ======= MySQL Connection Pool ======= //
@@ -98,6 +83,10 @@ app.use((req, res, next) => {
     `frame-src 'none'; ` +
     `object-src 'none'`
   );
+  
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
   
   // Logging
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
@@ -196,6 +185,18 @@ function isAuthenticated(req, res, next) {
     return res.status(401).json({ message: "Unauthorized: Invalid token" });
   }
 }
+
+// ======= Routes ======= //
+// Add your routes here...
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // ======= Email Configuration ======= //
 const transporter = nodemailer.createTransport({
@@ -4822,6 +4823,11 @@ Nombeko Training Consultants & CodeSA Institute (PTY) LTD
 
 
 // ======= Start the Server ======= //
-app.listen(port, () => {
-  console.log(`🚀 Server running at: http://localhost:${port}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Environment: ${isProduction ? 'Production' : 'Development'}`);
+  console.log(`Allowed origins: ${frontendUrls.join(', ')}`);
+  if (isProduction && !process.env.REDIS_URL) {
+    console.warn('WARNING: Running in production without Redis');
+  }
 });
