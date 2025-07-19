@@ -30,13 +30,29 @@ const pool = mysql.createPool({
 // ======= Middleware ======= //
 app.use(express.json());
 app.use(bodyParser.json());
-app.use(
-  cors({
-    //origin: "http://localhost:4200", // Allow requests from Angular frontend
-    origin: "https://mut-environmental-health-wil-backend.onrender.com/", // Allow requests from Angular frontend
-    credentials: true,
-  })
-);
+
+// CORS configuration to allow both local dev and deployed frontend
+const allowedOrigins = [
+  "http://localhost:4200",                          // Local Angular dev server
+  "https://mut-environmental-health-wil.netlify.app " // Deployed Angular app
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+
+    // Check if the origin is in the allowed list
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
