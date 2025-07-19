@@ -44,24 +44,33 @@ const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 app.use((req, res, next) => {
   console.log("Body:", req.body);
   console.log("Files:", req.files);
+  
+  // Set CORS headers first
+  res.setHeader("Access-Control-Allow-Origin", [
+    "http://localhost:4200",
+    "https://environmental-health-wil-frontend.netlify.app"
+  ].includes(req.headers.origin) ? req.headers.origin : "");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  
+  // Then set Content Security Policy
   res.setHeader("Content-Security-Policy", 
     "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src 'self' https://fonts.gstatic.com; " +
-    "img-src 'self' data: http://localhost:8080"
-  res.setHeader("Content-Security-Policy", 
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " + // Allow inline scripts
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src 'self' https://fonts.gstatic.com data:; " + // Added data: for font loading
+    "font-src 'self' https://fonts.gstatic.com data:; " +
     "img-src 'self' data: http://localhost:8080; " +
-    "connect-src 'self'; " +
+    "connect-src 'self' http://localhost:8080 https://environmental-health-wil-frontend.netlify.app; " + // Added your domains
     "frame-src 'none'; " +
     "object-src 'none'"
   );
+  
+  // Other security headers
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-XSS-Protection", "1; mode=block");
+  
   next();
 });
 // ======= Session Middleware ======= //
