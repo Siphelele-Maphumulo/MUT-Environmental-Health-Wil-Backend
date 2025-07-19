@@ -9,12 +9,26 @@ const path = require("path");
 const multer = require("multer");
 const fs = require("fs");
 const session = require("express-session");
+const RedisStore = require("connect-redis")(session);
+const redis = require("redis");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const moment = require('moment');
 
 const app = express();
-const port = process.env.PORT || 8080;
+
+// ======= Environment Configuration ======= //
+const PORT = process.env.PORT || 10000;
+const isProduction = process.env.NODE_ENV === "production";
+
+// URLs configuration
+const frontendUrls = [
+  "http://localhost:4200",
+  "https://environmental-health-wil-frontend.netlify.app"
+];
+const backendUrl = isProduction 
+  ? "https://mut-environmental-health-wil-backend.onrender.com" 
+  : `http://localhost:${PORT}`;
 
 // ======= MySQL Connection Pool ======= //
 const pool = mysql.createPool({
@@ -27,115 +41,133 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
+// ======= Redis Client Setup ======= //
+let redisClient;
+let sessionStore;
+
+if (isProduction) {
+  redisClient = redis.createClient({
+    url: process.env.REDIS_URL,
+    legacyMode: true
+  });
+  redisClient.connect().catch(console.error);
+  sessionStore = new RedisStore({ client: redisClient });
+} else {
+  sessionStore = new session.MemoryStore();
+}
+
 // ======= Middleware ======= //
 app.use(express.json());
 app.use(bodyParser.json());
-app.use(
-  cors({
-    origin: "http://localhost:4200", // Allow requests from Angular frontend
-    credentials: true,
-  })
-);
+app.use(bodyParser.urlencoded({ extended: true }));
 
-// Secret key for signing JWT (store this securely, e.g., in an environment variable)
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
+// Enhanced CORS configuration
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin || frontendUrls.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
+}));
 
-// ======= Security Headers ======= //
+// Security headers middleware
 app.use((req, res, next) => {
-  console.log("Body:", req.body);
-  console.log("Files:", req.files);
-  
-  // Set CORS headers first
-  res.setHeader("Access-Control-Allow-Origin", [
-    "http://localhost:4200",
-    "https://environmental-health-wil-frontend.netlify.app"
-  ].includes(req.headers.origin) ? req.headers.origin : "");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  
-  // Then set Content Security Policy
+  // Security Headers
   res.setHeader("Content-Security-Policy", 
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src 'self' https://fonts.gstatic.com data:; " +
-    "img-src 'self' data: http://localhost:8080; " +
-    "connect-src 'self' http://localhost:8080 https://environmental-health-wil-frontend.netlify.app; " + // Added your domains
-    "frame-src 'none'; " +
-    "object-src 'none'"
+    `default-src 'self'; ` +
+    `script-src 'self' 'unsafe-inline' 'unsafe-eval'; ` +
+    `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; ` +
+    `font-src 'self' https://fonts.gstatic.com data:; ` +
+    `img-src 'self' data: ${backendUrl}; ` +
+    `connect-src 'self' ${backendUrl} ${frontendUrls.join(" ")}; ` +
+    `frame-src 'none'; ` +
+    `object-src 'none'`
   );
-  
-  // Other security headers
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  
+  // Logging
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log("Body:", req.body);
+  console.log("Files:", req.files);
   
   next();
 });
-// ======= Session Middleware ======= //
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "your-secret-key", // Use a secure secret key
-    resave: false,
-    saveUninitialized: true,
-    cookie: {
-      httpOnly: true,
-      secure: false, // Set to true if using HTTPS
-      maxAge: 1000 * 60 * 60, // Session expires in 1 hour
-    },
-  })
-);
 
+// Session configuration
+const sessionConfig = {
+  store: sessionStore,
+  secret: process.env.SESSION_SECRET || "your-secret-key",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    maxAge: 1000 * 60 * 60, // 1 hour
+    domain: isProduction ? ".onrender.com" : undefined
+  }
+};
+
+if (isProduction) {
+  app.set('trust proxy', 1); // Trust first proxy
+}
+app.use(session(sessionConfig));
+
+// JWT Configuration
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 const saltRounds = 10;
 
-// Add this RIGHT AFTER your session middleware but BEFORE your routes
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
-
-// ======= Multer Configuration for File Uploads ======= //
+// ======= File Upload Configuration ======= //
 const UPLOADS_PATH = path.join(__dirname, "uploads");
-
 if (!fs.existsSync(UPLOADS_PATH)) {
   fs.mkdirSync(UPLOADS_PATH, { recursive: true });
 }
 
-// Configure multer storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "uploads"));
+    cb(null, UPLOADS_PATH);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
     cb(null, `${uniqueSuffix}-${file.originalname}`);
-  },
+  }
 });
 
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB
+  }
+});
 
-// ======= Serve Uploaded Files ======= //
 app.use("/uploads", express.static(UPLOADS_PATH));
 
-// ======= Generate JWT Token ======= //
+// ======= Token Functions ======= //
 function generateToken(user) {
   return jwt.sign(
-    { userId: user.id, email: user.email },
+    { 
+      userId: user.id, 
+      email: user.email,
+      role: user.role || 'user'
+    },
     JWT_SECRET,
-    { expiresIn: "1h" } // Token expires in 1 hour
+    { expiresIn: "1h" }
   );
 }
 
-// ======= Verify JWT Token Middleware ======= //
 function authenticateToken(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
-
+  const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
+  
   if (!token) {
-    return res
-      .status(401)
-      .json({ message: "Access denied. No token provided." });
+    return res.status(401).json({ message: "Access denied. No token provided." });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
@@ -147,50 +179,57 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// isAuthenticated Middleware
 function isAuthenticated(req, res, next) {
-  // Extract the token from the Authorization header
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
+  
+  if (!token) {
     return res.status(401).json({ message: "Unauthorized: Missing token" });
   }
 
-  const token = authHeader.split(" ")[1]; // Extract the token after "Bearer"
-
   try {
-    // Verify the token
-    const decoded = jwt.verify(token, SECRET_KEY);
-
-    // Attach the user information to the request object
+    const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
-
-    // Proceed to the next middleware/route handler
     next();
   } catch (error) {
-    // Handle invalid or expired tokens
     return res.status(401).json({ message: "Unauthorized: Invalid token" });
   }
 }
 
-// ========= Email transporter setup ==============//
+// ======= Email Configuration ======= //
 const transporter = nodemailer.createTransport({
-  service: "gmail", // or your email provider
+  service: process.env.EMAIL_SERVICE || "gmail",
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  tls: {
+    rejectUnauthorized: isProduction
+  }
 });
 
-// Generate random 8-character code
 function generateCode() {
   return crypto.randomBytes(4).toString("hex").toUpperCase();
 }
 
-// Protected Route Example
+// ======= Routes ======= //
 app.get("/api/protected", isAuthenticated, (req, res) => {
-  // Access the authenticated user's information from req.user
-  res.json({ message: "You are authorized!", user: req.user });
+  res.json({ 
+    message: "You are authorized!", 
+    user: {
+      id: req.user.userId,
+      email: req.user.email,
+      role: req.user.role
+    }
+  });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
 });
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++//
