@@ -3,6 +3,7 @@ const express = require("express");
 const mysql = require("mysql2/promise");
 const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
+const bodyParser = require("body-parser");
 const cors = require("cors");
 const path = require("path");
 const multer = require("multer");
@@ -11,8 +12,6 @@ const session = require("express-session");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const moment = require('moment');
-const helmet = require("helmet"); // Added for security headers
-const rateLimit = require("express-rate-limit"); // Added for rate limiting
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -26,96 +25,85 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
 });
 
-// ======= Security Middleware ======= //
-app.use(helmet());
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// ======= Middleware ======= //
+app.use(express.json());
+app.use(bodyParser.json());
 
-// Rate limiting for API endpoints
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later'
-});
-
-// ======= CORS Configuration ======= //
+// CORS configuration to allow both local dev and deployed frontend
 const allowedOrigins = [
-  "http://localhost:4200",
-  "https://mut-environmental-health.netlify.app",
-  "https://mut-environmental-health-wil.netlify.app" // Removed trailing space
+  "http://localhost:4200",      
+  "https://mut-environmental-health.netlify.app",                   // Local Angular dev server
+  "https://environmental-health-wil-frontend.netlify.app" // Deployed Angular app
 ];
 
-const corsOptions = {
+app.use(cors({
   origin: function (origin, callback) {
-    if (!origin && process.env.NODE_ENV === 'development') {
-      return callback(null, true);
-    }
-    if (allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+
+    // Check if the origin is in the allowed list
+    if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  exposedHeaders: ["Authorization"]
-};
-
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
-
-// ======= Session Configuration ======= //
-app.use(session({
-  secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
-  resave: false,
-  saveUninitialized: false,
-  cookie: { 
-    secure: process.env.NODE_ENV === 'production',
-    httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  }
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-// ======= Request Logging ======= //
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`, {
-    headers: req.headers,
-    body: req.body
-  });
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// ======= Health Check ======= //
 app.get('/', (req, res) => {
-  res.status(200).json({ 
-    message: 'Welcome to the MUT Environmental Health WIL Backend API',
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
+  res.status(200).json({ message: 'Welcome to the MUT Environmental Health WIL Backend API' });
 });
 
-// ======= Error Handling ======= //
-app.use((err, req, res, next) => {
-  console.error(`[ERROR] ${err.stack}`);
-  
-  if (err.message === 'Not allowed by CORS') {
-    return res.status(403).json({ 
-      error: 'Access forbidden',
-      message: 'Cross-origin requests are not allowed from your domain'
-    });
-  }
+// Secret key for signing JWT (store this securely, e.g., in an environment variable)
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
-  res.status(500).json({
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!'
-  });
+// ======= Security Headers ======= //
+// app.use((req, res, next) => {
+//   console.log("Body:", req.body);
+//   console.log("Files:", req.files);
+//   res.setHeader(
+//     "Content-Security-Policy",
+//     "default-src 'self'; img-src 'self' data: http://localhost:8080"
+//   );
+//   res.setHeader("X-Content-Type-Options", "nosniff");
+//   next();
+// });
+
+// ======= Session Middleware ======= //
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "your-secret-key", // Use a secure secret key
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+      httpOnly: true,
+      secure: false, // Set to true if using HTTPS
+      maxAge: 1000 * 60 * 60, // Session expires in 1 hour
+    },
+  })
+);
+
+const saltRounds = 10;
+
+// Add this RIGHT AFTER your session middleware but BEFORE your routes
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
 });
 
 
@@ -315,7 +303,7 @@ app.post("/api/student_signup", async (req, res) => {
 });
 
 // ======= Staff Signup Route ======= //
-app.post("/faff_Signup", async (req, res) => {
+app.post("/api/staff_Signup", async (req, res) => {
   const { email, title, password, code } = req.body;
 
   if (!code) {
@@ -4804,20 +4792,7 @@ Nombeko Training Consultants & CodeSA Institute (PTY) LTD
 });
 
 
-
-// ======= Server Startup ======= //
+// ======= Start the Server ======= //
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Allowed origins: ${allowedOrigins.join(', ')}`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  pool.end();
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
+  console.log(`🚀 Server running at: http://localhost:${port}`);
 });
