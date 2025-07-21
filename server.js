@@ -3,7 +3,6 @@ const express = require("express");
 const mysql = require("mysql2/promise");
 const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
-const bodyParser = require("body-parser");
 const cors = require("cors");
 const path = require("path");
 const multer = require("multer");
@@ -12,6 +11,8 @@ const session = require("express-session");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const moment = require('moment');
+const helmet = require("helmet"); // Added for security headers
+const rateLimit = require("express-rate-limit"); // Added for rate limiting
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -25,85 +26,96 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
 });
 
-// ======= Middleware ======= //
-app.use(express.json());
-app.use(bodyParser.json());
+// ======= Security Middleware ======= //
+app.use(helmet());
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-// CORS configuration to allow both local dev and deployed frontend
+// Rate limiting for API endpoints
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later'
+});
+
+// ======= CORS Configuration ======= //
 const allowedOrigins = [
-  "http://localhost:4200",                          // Local Angular dev server
-  "https://mut-environmental-health-wil.netlify.app " // Deployed Angular app
+  "http://localhost:4200",
+  "https://mut-environmental-health.netlify.app",
+  "https://mut-environmental-health-wil.netlify.app" // Removed trailing space
 ];
 
-app.use(cors({
+const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-
-    // Check if the origin is in the allowed list
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (!origin && process.env.NODE_ENV === 'development') {
+      return callback(null, true);
+    }
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  exposedHeaders: ["Authorization"]
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
+
+// ======= Session Configuration ======= //
+app.use(session({
+  secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
 }));
 
+// ======= Request Logging ======= //
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`, {
+    headers: req.headers,
+    body: req.body
+  });
   next();
 });
 
+// ======= Health Check ======= //
 app.get('/', (req, res) => {
-  res.status(200).json({ message: 'Welcome to the MUT Environmental Health WIL Backend API' });
+  res.status(200).json({ 
+    message: 'Welcome to the MUT Environmental Health WIL Backend API',
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
 });
 
-// Secret key for signing JWT (store this securely, e.g., in an environment variable)
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
+// ======= Error Handling ======= //
+app.use((err, req, res, next) => {
+  console.error(`[ERROR] ${err.stack}`);
+  
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ 
+      error: 'Access forbidden',
+      message: 'Cross-origin requests are not allowed from your domain'
+    });
+  }
 
-// ======= Security Headers ======= //
-app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline'; " +
-    "style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data:; " +
-    "font-src 'self';"
-  );
-  next();
-});
-
-// ======= Session Middleware ======= //
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "your-secret-key", // Use a secure secret key
-    resave: false,
-    saveUninitialized: true,
-    cookie: {
-      httpOnly: true,
-      secure: false, // Set to true if using HTTPS
-      maxAge: 1000 * 60 * 60, // Session expires in 1 hour
-    },
-  })
-);
-
-const saltRounds = 10;
-
-// Add this RIGHT AFTER your session middleware but BEFORE your routes
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
-
-
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!'
+  });
 });
 
 
@@ -4792,7 +4804,20 @@ Nombeko Training Consultants & CodeSA Institute (PTY) LTD
 });
 
 
-// ======= Start the Server ======= //
+
+// ======= Server Startup ======= //
 app.listen(port, () => {
-  console.log(`🚀 Server running at: http://localhost:${port}`);
+  console.log(`Server running on port ${port}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Allowed origins: ${allowedOrigins.join(', ')}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  pool.end();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });
