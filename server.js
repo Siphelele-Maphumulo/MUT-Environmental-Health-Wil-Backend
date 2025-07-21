@@ -67,16 +67,17 @@ app.get('/', (req, res) => {
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
 // ======= Security Headers ======= //
-// app.use((req, res, next) => {
-//   console.log("Body:", req.body);
-//   console.log("Files:", req.files);
-//   res.setHeader(
-//     "Content-Security-Policy",
-//     "default-src 'self'; img-src 'self' data: http://localhost:8080"
-//   );
-//   res.setHeader("X-Content-Type-Options", "nosniff");
-//   next();
-// });
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; " +
+    "font-src 'self';"
+  );
+  next();
+});
 
 // ======= Session Middleware ======= //
 app.use(
@@ -302,7 +303,7 @@ app.post("/api/student_signup", async (req, res) => {
 });
 
 // ======= Staff Signup Route ======= //
-app.post("/api/staff_Signup", async (req, res) => {
+app.post("/faff_Signup", async (req, res) => {
   const { email, title, password, code } = req.body;
 
   if (!code) {
